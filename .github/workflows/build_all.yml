@@ -6,8 +6,8 @@ on:
     inputs:
       platforms:
         description: 'Platforms to build:'
-        # default: 'backend linux_arm32 linux_arm64 linux_x64 macos windows_x64 windows_portable'
-        default: 'backend linux_arm64 linux_x64 macos windows_x64 windows_portable'
+        # default: 'backend linux_arm32 linux_arm64 linux_x64 macos windows_x64 windows_portable windows_arm64'
+        default: 'backend linux_arm64 linux_x64 macos windows_x64 windows_portable windows_arm64'
         required: true
       build_mode:
         description: 'Build mode: devel,nightly,testing,stable'
@@ -29,8 +29,8 @@ on:
     inputs:
       platforms:
         description: 'Platforms to build:'
-        # default: 'backend linux_arm32 linux_arm64 linux_x64 macos windows_x64 windows_portable'
-        default: 'backend linux_arm64 linux_x64 macos windows_x64 windows_portable'
+        # default: 'backend linux_arm32 linux_arm64 linux_x64 macos windows_x64 windows_portable windows_arm64'
+        default: 'backend linux_arm64 linux_x64 macos windows_x64 windows_portable windows_arm64'
         type: string
         required: true
       build_mode:
