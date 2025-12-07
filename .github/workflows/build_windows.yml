@@ -497,17 +497,41 @@ jobs:
 
     - name: Build
       shell: cmd
-      env:
-        VSCMD_ARG_TGT_ARCH: arm64
       run: |
+        SET ARTIFACTS_DIR=build.artifacts
+        SET INSTALL_DIR=../build.install
+        SET /p BUILD_MODE=<%ARTIFACTS_DIR%\env\build_mode.env
+        SET "MUSE_APP_BUILD_MODE=dev"
+        IF %BUILD_MODE% == devel   ( SET "MUSE_APP_BUILD_MODE=dev" ) ELSE (
+        IF %BUILD_MODE% == nightly ( SET "MUSE_APP_BUILD_MODE=dev" ) ELSE (
+        IF %BUILD_MODE% == testing ( SET "MUSE_APP_BUILD_MODE=testing" ) ELSE (
+        IF %BUILD_MODE% == stable  ( SET "MUSE_APP_BUILD_MODE=release" ) ELSE (
+            ECHO "error: unknown BUILD_MODE: %BUILD_MODE%"
+            EXIT /b 1
+        ))))
+        XCOPY "C:\musescore_dependencies" %CD% /E /I /Y
+        SET "JACK_DIR=C:\Program Files (x86)\Jack"
+        SET "PATH=%JACK_DIR%;%PATH%"
+        bash ./buildscripts/ci/tools/make_revision_env.sh
+        SET /p MUSESCORE_REVISION=<%ARTIFACTS_DIR%\env\build_revision.env
+        SET MUSESCORE_BUILD_CONFIGURATION=app
+        SET MUSE_APP_BUILD_MODE=%MUSE_APP_BUILD_MODE%
+        SET MUSESCORE_BUILD_NUMBER=${{ env.BUILD_NUMBER }}
+        SET MUSESCORE_REVISION=%MUSESCORE_REVISION%
+        SET MUSESCORE_INSTALL_DIR=%INSTALL_DIR%
+        IF ${{ env.SENTRY_URL != 0 }} == true ( SET MUSESCORE_CRASHREPORT_URL="${{ env.SENTRY_URL }}" ) ELSE ( SET MUSESCORE_CRASHREPORT_URL="" )
+        SET MUSESCORE_BUILD_VST_MODULE=ON
+        SET MUSESCORE_BUILD_WEBSOCKET=ON
         SET VSWHERE="C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
-        FOR /f "usebackq tokens=*" %%i in (`%VSWHERE% -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 -property installationPath`) do (
+        FOR /f "usebackq tokens=*" %%i in (`%VSWHERE% -latest -products * -requires Microsoft.Component.MSBuild -property installationPath`) do (
           SET VS_INSTALL_DIR=%%i
         )
         ECHO "VS_INSTALL_DIR: %VS_INSTALL_DIR%"
         CALL "%VS_INSTALL_DIR%\VC\Auxiliary\Build\vcvarsamd64_arm64.bat"
-        IF ${{ env.SENTRY_URL != 0 }} == true ( SET C_URL="${{ env.SENTRY_URL }}" ) ELSE ( SET C_URL="" )
         bash ./ninja_build.sh -t installrelwithdebinfo
+        bash ./buildscripts/ci/tools/make_release_channel_env.sh -c %MUSE_APP_BUILD_MODE%
+        bash ./buildscripts/ci/tools/make_version_env.sh ${{ env.BUILD_NUMBER }}
+        bash ./buildscripts/ci/tools/make_branch_env.sh
         echo "============== ccache ==============="
         ccache -sv
     - name: Package
