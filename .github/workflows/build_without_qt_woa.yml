@@ -1,0 +1,34 @@
+name: 'Build: Without Qt (Windows on ARM64)'
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_mode:
+        description: 'Build mode: devel, nightly, testing, stable'
+        default: 'devel'
+        required: true
+
+jobs:
+  windows_arm64_without_qt:
+    runs-on: windows-2025
+    steps:
+    - name: Cancel Previous Runs
+      uses: styfle/cancel-workflow-action@0.12.1
+      with:
+        access_token: ${{ github.token }}
+    - name: Clone repository
+      uses: actions/checkout@v6
+    - name: Setup environment
+      shell: cmd
+      run: |
+        buildscripts\ci\withoutqtwoa\setup.bat
+    - name: Build
+      shell: cmd
+      run: |
+        buildscripts\ci\withoutqtwoa\build.bat -m ${{ inputs.build_mode }}
+    - name: Upload artifacts on GitHub
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v5
+      with:
+        name: MuseScore-WithoutQt-ARM64-${{ inputs.build_mode }}
+        path: build.artifacts\
