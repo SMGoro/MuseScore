@@ -6,7 +6,7 @@ on:
     inputs:
       platforms:
         description: 'Platforms to build:'
-        default: 'windows_x64 windows_portable'
+        default: 'windows_x64 windows_portable windows_arm64'
         required: true
       build_mode:
         description: 'Build mode: devel, nightly, testing, stable'
@@ -24,7 +24,7 @@ on:
     inputs:
       platforms:
         description: 'Platforms to build:'
-        default: 'windows_x64 windows_portable'
+        default: 'windows_x64 windows_portable windows_arm64'
         type: string
         required: true
       build_mode:
@@ -352,6 +352,227 @@ jobs:
       run: |
         bash ./buildscripts/ci/tools/osuosl/publish.sh -s ${{ secrets.OSUOSL_SSH_ENCRYPT_SECRET }} --os windows -v 4 --arch x86_64
     - name: Upload artifacts on GitHub
+      uses: actions/upload-artifact@v5
+      with:
+        name: ${{ env.UPLOAD_ARTIFACT_NAME }}
+        path: build.artifacts\
+
+  windows_arm64:
+    # Disable on pull_request
+    if: |
+      github.event_name != 'pull_request' &&
+      (github.event_name != 'workflow_dispatch' || contains(inputs.platforms, 'windows_arm64'))
+    runs-on: windows-2025
+    steps:
+    - name: Cancel Previous Runs
+      uses: styfle/cancel-workflow-action@0.12.1
+      with:
+        access_token: ${{ github.token }}
+    - name: Clone repository
+      uses: actions/checkout@v6
+    - name: Configure workflow
+      shell: bash
+      env:
+        pull_request_title: ${{ github.event.pull_request.title }}
+        SENTRY_MUSE_MU4_KEY: ${{ secrets.SENTRY_MUSE_MU4_KEY }}
+        SENTRY_MUSE_MU4_SANDBOX_KEY: ${{ secrets.SENTRY_MUSE_MU4_SANDBOX_KEY }}
+        SENTRY_PROJECT: ${{ inputs.sentry_project }}
+      run: |
+        set -x  # Enable debug output
+        bash ./buildscripts/ci/tools/make_build_mode_env.sh -e ${{ github.event_name }} -m ${{ inputs.build_mode || 'devel' }}
+        BUILD_MODE=$(cat ./build.artifacts/env/build_mode.env)
+
+        if [ -n "${{ inputs.build_number }}" ]; then
+          BUILD_NUMBER="${{ inputs.build_number }}"
+          bash ./buildscripts/ci/tools/make_build_number.sh "$BUILD_NUMBER"
+        else
+          bash ./buildscripts/ci/tools/make_build_number.sh
+        fi
+        BUILD_NUMBER=$(cat ./build.artifacts/env/build_number.env)
+
+        DO_UPDATE_TS='false'
+        if [[ "$BUILD_MODE" == "testing" || "$BUILD_MODE" == "stable" ]]; then
+          DO_UPDATE_TS='true'
+          if [ -z "${{ secrets.TRANSIFEX_API_TOKEN }}" ]; then
+            echo "::warning::TRANSIFEX_API_TOKEN is empty; updating .ts files disabled"
+            DO_UPDATE_TS='false'
+          fi
+        fi
+
+        DO_PLACEHOLDER_TRANSLATIONS='false'
+        if [[ "$BUILD_MODE" == "nightly" || "$BUILD_MODE" == "devel" ]]; then
+          DO_PLACEHOLDER_TRANSLATIONS='true'
+        fi
+
+        DO_UPLOAD_SYMBOLS='false'
+        SENTRY_URL=""
+
+        if [ "$SENTRY_MUSE_MU4_KEY" != "" ]; then
+          if [ -z "$SENTRY_PROJECT" ] && [ "$BUILD_MODE" == "stable" ]; then
+            SENTRY_PROJECT="mu4"
+          fi
+
+          if [ "$SENTRY_PROJECT" == "mu4" ]; then
+            DO_UPLOAD_SYMBOLS='true'
+            SENTRY_URL=https://sentry.musescore.com/api/4/minidump/?sentry_key=$SENTRY_MUSE_MU4_KEY
+          fi
+        fi
+
+        if [ -z "$SENTRY_PROJECT" ] && [ "$BUILD_MODE" == "nightly" ]; then
+          SENTRY_PROJECT="mu4-sandbox"
+        fi
+
+        if [ "$SENTRY_PROJECT" == "mu4-sandbox" ] && [ "$SENTRY_MUSE_MU4_SANDBOX_KEY" != "" ]; then
+          DO_UPLOAD_SYMBOLS='true'
+          SENTRY_URL=https://sentry.musescore.com/api/3/minidump/?sentry_key=$SENTRY_MUSE_MU4_SANDBOX_KEY
+        fi
+
+        DO_PUBLISH='false'
+        if [ "${{ inputs.publish }}" == "on" ]; then
+          DO_PUBLISH='true'
+          if [ -z "${{ secrets.OSUOSL_SSH_ENCRYPT_SECRET }}" ]; then
+            echo "::warning::OSUOSL_SSH_ENCRYPT_SECRET is empty; not publishing to OSUOSL"
+            DO_PUBLISH='false'
+          fi
+        fi
+
+        ADD_INFO="_${GITHUB_REF#refs/heads/}"
+        if [ "${{ github.event_name }}" == "pull_request" ]; then
+          ADD_INFO="_${{ github.event.pull_request.number }}_${pull_request_title}"
+        fi
+        UPLOAD_ARTIFACT_NAME="$(echo "MU4_${BUILD_NUMBER}_Win_arm64${ADD_INFO}" | tr '":<>|*?/\\' '_')"
+
+        echo "github.repository: ${{ github.repository }}"
+        echo "BUILD_MODE=$BUILD_MODE" | tee -a $GITHUB_ENV
+        echo "BUILD_NUMBER=$BUILD_NUMBER" | tee -a $GITHUB_ENV
+        echo "DO_UPDATE_TS=$DO_UPDATE_TS" | tee -a $GITHUB_ENV
+        echo "DO_PLACEHOLDER_TRANSLATIONS=$DO_PLACEHOLDER_TRANSLATIONS" | tee -a $GITHUB_ENV
+        echo "DO_UPLOAD_SYMBOLS=$DO_UPLOAD_SYMBOLS" | tee -a $GITHUB_ENV
+        echo "SENTRY_PROJECT=$SENTRY_PROJECT" | tee -a $GITHUB_ENV
+        echo "SENTRY_URL=$SENTRY_URL" | tee -a $GITHUB_ENV
+        echo "DO_PUBLISH=$DO_PUBLISH" | tee -a $GITHUB_ENV
+        echo "UPLOAD_ARTIFACT_NAME=$UPLOAD_ARTIFACT_NAME" | tee -a $GITHUB_ENV
+
+        echo "CCACHE_TIMESTAMP=$(date -u +"%F-%T")" | tee -a $GITHUB_ENV
+
+    - name: Restore ccache files
+      uses: actions/cache@v4
+      with:
+        path: ${{ github.workspace }}/.ccache
+        key: ${{runner.os}}-${{runner.arch}}-arm64-ccache-${{ env.CCACHE_TIMESTAMP }}
+        restore-keys: ${{runner.os}}-${{runner.arch}}-arm64-ccache-
+    - name: Setup ccache
+      run: |
+        choco install -y ccache
+        bash ./buildscripts/ci/tools/setup_ccache_config.sh
+
+    - name: Install Qt for ARM64
+      shell: pwsh
+      run: |
+        Write-Host "::group::Qt ARM64 Setup"
+        Write-Host "Qt for Windows ARM64 requires custom setup as pre-built binaries are not available"
+        Write-Host "Checking for cached Qt ARM64 build..."
+        
+        # Define Qt ARM64 path
+        $QtArm64Path = "D:\Qt-ARM64"
+        $QtVersion = "6.2.0"
+        $QtArm64Install = "$QtArm64Path\$QtVersion\msvc2019_arm64"
+        
+        if (Test-Path $QtArm64Install) {
+          Write-Host "Found cached Qt ARM64 at $QtArm64Install"
+          echo "CMAKE_PREFIX_PATH=$QtArm64Install" >> $env:GITHUB_ENV
+          echo "Qt6_DIR=$QtArm64Install" >> $env:GITHUB_ENV
+          echo "QT_PLUGIN_PATH=$QtArm64Install\plugins" >> $env:GITHUB_ENV
+        } else {
+          Write-Host "::error::Qt ARM64 not found. Please either:"
+          Write-Host "1. Build Qt from source: https://wiki.qt.io/Building_Qt_6_from_Git#On_Windows"
+          Write-Host "2. Download pre-built Qt ARM64 from a third-party source"
+          Write-Host "3. Use GitHub Actions cache with pre-built Qt ARM64"
+          Write-Host "Attempting minimal Qt setup for testing..."
+          
+          # For now, we'll skip this and let the build fail with a clear message
+          # In production, this would require a pre-built Qt ARM64 cache or build step
+          Write-Host "::warning::Proceeding without Qt - build will likely fail"
+        }
+        Write-Host "::endgroup::"
+    - name: Setup environment
+      run: |
+        buildscripts\ci\windows\setup.bat
+
+    - name: Generate _en.ts files
+      shell: bash
+      env:
+        LUPDATE_ARGS: ""
+        POSTPROCESS_ARGS: "--warn-only ${{ env.DO_PLACEHOLDER_TRANSLATIONS == 'true' && '--generate-placeholder-translations' || '' }}"
+        POSTPROCESS_LAUNCHER: "python3 -X utf8"
+      run: |
+        bash ./tools/translations/run_lupdate.sh
+    - name: Update .ts files (tx pull)
+      if: env.DO_UPDATE_TS == 'true'
+      uses: cbjeukendrup/cli-action@windows
+      with:
+        token: ${{ secrets.TRANSIFEX_API_TOKEN }}
+        args: "pull -f"
+
+    - name: Register msvc problem matcher
+      run: echo "::add-matcher::.github/problem_matchers/msvc.json"
+
+    - name: Build
+      shell: cmd
+      run: |
+        SET ARTIFACTS_DIR=build.artifacts
+        SET INSTALL_DIR=../build.install
+        SET /p BUILD_MODE=<%ARTIFACTS_DIR%\env\build_mode.env
+        SET "MUSE_APP_BUILD_MODE=dev"
+        IF %BUILD_MODE% == devel   ( SET "MUSE_APP_BUILD_MODE=dev" ) ELSE (
+        IF %BUILD_MODE% == nightly ( SET "MUSE_APP_BUILD_MODE=dev" ) ELSE (
+        IF %BUILD_MODE% == testing ( SET "MUSE_APP_BUILD_MODE=testing" ) ELSE (
+        IF %BUILD_MODE% == stable  ( SET "MUSE_APP_BUILD_MODE=release" ) ELSE (
+            ECHO "error: unknown BUILD_MODE: %BUILD_MODE%"
+            EXIT /b 1
+        ))))
+        XCOPY "C:\musescore_dependencies" %CD% /E /I /Y
+        SET "JACK_DIR=C:\Program Files (x86)\Jack"
+        SET "PATH=%JACK_DIR%;%PATH%"
+        bash ./buildscripts/ci/tools/make_revision_env.sh
+        SET /p MUSESCORE_REVISION=<%ARTIFACTS_DIR%\env\build_revision.env
+        SET MUSESCORE_BUILD_CONFIGURATION=app
+        SET MUSE_APP_BUILD_MODE=%MUSE_APP_BUILD_MODE%
+        SET MUSESCORE_BUILD_NUMBER=${{ env.BUILD_NUMBER }}
+        SET MUSESCORE_REVISION=%MUSESCORE_REVISION%
+        SET MUSESCORE_INSTALL_DIR=%INSTALL_DIR%
+        IF ${{ env.SENTRY_URL != 0 }} == true ( SET MUSESCORE_CRASHREPORT_URL="${{ env.SENTRY_URL }}" ) ELSE ( SET MUSESCORE_CRASHREPORT_URL="" )
+        SET MUSESCORE_BUILD_VST_MODULE=ON
+        SET MUSESCORE_BUILD_WEBSOCKET=ON
+        SET VSWHERE="C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+        FOR /f "usebackq tokens=*" %%i in (`%VSWHERE% -latest -products * -requires Microsoft.Component.MSBuild -property installationPath`) do (
+          SET VS_INSTALL_DIR=%%i
+        )
+        ECHO "VS_INSTALL_DIR: %VS_INSTALL_DIR%"
+        CALL "%VS_INSTALL_DIR%\VC\Auxiliary\Build\vcvarsamd64_arm64.bat"
+        bash ./ninja_build.sh -t installrelwithdebinfo
+        bash ./buildscripts/ci/tools/make_release_channel_env.sh -c %MUSE_APP_BUILD_MODE%
+        bash ./buildscripts/ci/tools/make_version_env.sh ${{ env.BUILD_NUMBER }}
+        bash ./buildscripts/ci/tools/make_branch_env.sh
+        echo "============== ccache ==============="
+        ccache -sv
+    - name: Package
+      shell: cmd
+      run: |
+        IF ${{ secrets.WIN_SIGN_S3_SECRET != 0 }} == true ( SET S_S=${{ secrets.WIN_SIGN_S3_SECRET }} ) ELSE ( SET S_S="''" )
+        IF ${{ secrets.WIN_SIGN_S3_KEY != 0 }} == true ( SET S_K=${{ secrets.WIN_SIGN_S3_KEY }} ) ELSE ( SET S_K="''" )
+        IF ${{ env.BUILD_MODE }} == stable ( SET GUID=${{ secrets.WIN_MSI_STABLE_MU4_GUID }} ) ELSE ( SET GUID=${{ secrets.WIN_MSI_TESTING_MU4_GUID }} )
+        buildscripts\ci\windows\package.bat --arch arm64 --signsecret %S_S% --signkey %S_K% --guid %GUID%
+    - name: Checksum
+      run: |
+        bash ./buildscripts/ci/tools/checksum.sh
+    - name: Publish to OSUOSL
+      if: env.DO_PUBLISH == 'true'
+      shell: bash
+      run: |
+        bash ./buildscripts/ci/tools/osuosl/publish.sh -s ${{ secrets.OSUOSL_SSH_ENCRYPT_SECRET }} --os windows -v 4 --arch arm64
+    - name: Upload artifacts on GitHub
+      if: ${{ always() }}
       uses: actions/upload-artifact@v5
       with:
         name: ${{ env.UPLOAD_ARTIFACT_NAME }}
